@@ -1,0 +1,18 @@
+BabelStream
+Version: 5.0
+Implementation: HIP
+Running kernels 600 times
+Precision: double
+Array size: 4295.0 MB (=4.3 GB)
+Total size: 12884.9 MB (=12.9 GB)
+Using HIP device AMD Instinct MI300A
+Driver: 60342134
+Memory: DEFAULT
+Init: 14.783615 s (=871.566385 MBytes/sec)
+Read: 0.347730 s (=37054.316825 MBytes/sec)
+Function    MBytes/sec  Min (sec)   Max         Average     
+Copy        711498.415  0.01207     0.01804     0.01643     
+Mul         711627.560  0.01207     0.01855     0.01658     
+Add         715328.583  0.01801     0.02449     0.02250     
+Triad       715341.728  0.01801     0.02441     0.02249     
+Dot         676491.375  0.01270     0.02813     0.02506     
