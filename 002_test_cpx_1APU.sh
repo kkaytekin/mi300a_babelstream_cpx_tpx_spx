@@ -4,7 +4,13 @@ mkdir -p $OUTDIR
 
 for i in $(seq 0 5); do
   # Run for roughle 1 minutes
-  HIP_VISIBLE_DEVICES=$i /lustre/hpe/ws13/ws13.a/ws/hpckkuec-babelstream/BabelStream/build/hip-stream --arraysize 536870912 --numtimes 600 > $OUTDIR/device_${i}.txt 2>&1 &
+  # Array size: 2^28 elements (1GB per array)
+  HIP_VISIBLE_DEVICES=$i /lustre/hpe/ws13/ws13.a/ws/hpckkuec-babelstream/BabelStream/build/hip-stream \
+    --arraysize 268435456 \
+    --numtimes 1500 \
+    > $OUTDIR/device_${i}.txt \
+    2>&1 \
+    &
 done
 wait
 

@@ -8,11 +8,12 @@
 #   4. Repeat until within tolerance
 
 STREAM_BIN="/lustre/hpe/ws13/ws13.a/ws/hpckkuec-babelstream/BabelStream/build/hip-stream"
-ARRAYSIZE=536870912
+ARRAYSIZE=268435456
 TARGET_SECS=65
 TOLERANCE=5          # accept if within ±5s of target
 MAX_ITERS=8          # safety limit on search iterations
-LOGFILE="numtimes_search.log"
+LOGFILE="logs/numtimes_search.log"
+mkdir -p logs
 
 echo "=== BabelStream numtimes search ===" | tee "$LOGFILE"
 echo "Target duration: ${TARGET_SECS}s (±${TOLERANCE}s)" | tee -a "$LOGFILE"
@@ -30,7 +31,7 @@ run_bench() {
 }
 
 # Initial probe with numtimes=10
-NT=10
+NT=600
 echo "[iter 0] numtimes=$NT ..." | tee -a "$LOGFILE"
 DUR=$(run_bench $NT)
 echo "[iter 0] numtimes=$NT  duration=${DUR}s" | tee -a "$LOGFILE"
