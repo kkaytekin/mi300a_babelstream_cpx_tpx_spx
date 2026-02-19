@@ -25,3 +25,27 @@ git checkout 2f00dfb7f8b7cfe8c53d20d5c770bccbf8673440
 cmake -B build -DMODEL=hip -DCMAKE_CXX_COMPILER=hipcc
 cmake --build build
 ```
+## More Metadata about experiment setting
+
+All runs are under are done under the following setting:
+
+```
+BabelStream
+Version: 5.0
+Implementation: HIP
+Running kernels 1500 times
+Precision: double
+Array size: 2147.5 MB (=2.1 GB)
+Total size: 6442.5 MB (=6.4 GB)
+Using HIP device AMD Instinct MI300A
+Driver: 60342134
+Memory: DEFAULT
+```
+
+Except for experiment 3, where we got double the array size. `numtimes` is tuned down to take 60 +- 5 seconds:
+
+```
+Running kernels 600 times
+Array size: 4295.0 MB (=4.3 GB)
+Total size: 12884.9 MB (=12.9 GB)
+```
