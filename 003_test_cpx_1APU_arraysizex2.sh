@@ -1,5 +1,5 @@
 #!/bin/bash
-OUTDIR=/zhome/academic/HLRS/hlrs/hpckkuec/cpx_tpx_test/logs/002_v1
+OUTDIR=/zhome/academic/HLRS/hlrs/hpckkuec/cpx_tpx_test/logs/003
 mkdir -p $OUTDIR
 
 for i in $(seq 0 5); do
