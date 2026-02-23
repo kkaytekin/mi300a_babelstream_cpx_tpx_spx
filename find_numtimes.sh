@@ -8,7 +8,7 @@
 #   4. Repeat until within tolerance
 
 STREAM_BIN="/lustre/hpe/ws13/ws13.a/ws/hpckkuec-babelstream/BabelStream/build/hip-stream"
-ARRAYSIZE=268435456
+ARRAYSIZE=1610612736
 TARGET_SECS=65
 TOLERANCE=5          # accept if within ±5s of target
 MAX_ITERS=8          # safety limit on search iterations
@@ -30,8 +30,8 @@ run_bench() {
     echo "$duration"
 }
 
-# Initial probe with numtimes=10
-NT=600
+# Initial probe. Guess some number
+NT=250
 echo "[iter 0] numtimes=$NT ..." | tee -a "$LOGFILE"
 DUR=$(run_bench $NT)
 echo "[iter 0] numtimes=$NT  duration=${DUR}s" | tee -a "$LOGFILE"
