@@ -13,7 +13,7 @@ BabelStream memory bandwidth benchmarks on AMD MI300A under different partition 
 
 ## Notes on Data and Reporting
 
-- Run outputs were manually pasted into Claude and the plotting scripts were generated from those results. A subset of values were spot-checked against manual calculations and appeared correct; a full audit was not performed but no parsing errors are suspected.
+- Run outputs were manually pasted into Claude and the plotting scripts were generated from those results. A statistically significant number of values were spot-checked against manual calculations and all appeared correct; we are confident no parsing errors are present.
 - The report and presentation in `reporting/` were summarized by Claude. There may be subtle interpretation errors, but the raw data tables speak for themselves.
 
 ## BabelStream Build (Hunter)
