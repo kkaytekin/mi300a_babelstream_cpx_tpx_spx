@@ -58,6 +58,8 @@ The question is: does grouping more XCDs into a single device help or hurt memor
 
 Triad is the traditional STREAM benchmark kernel and is the standard measure of sustained memory bandwidth. Dot is the only kernel that involves a **reduction** -- accumulating results across all threads -- which makes it sensitive to inter-XCD communication.
 
+An important caveat: BabelStream measures **achievable HBM bandwidth** using pure streaming access patterns. It doesn't capture compute-bound behavior, non-trivial memory access patterns, inter-device communication (MPI/RCCL), or kernel launch overhead. Our results tell you how much bandwidth the hardware can deliver under ideal streaming conditions in each partition mode -- a useful ceiling for memory-bound codes, but not a direct prediction of application performance.
+
 We built BabelStream v5.0 with the HIP backend:
 
 ```bash
@@ -93,13 +95,15 @@ For TPX (12 devices) and SPX (4 devices), the loop bounds change accordingly. Th
 
 ### Normalizing array sizes for fair comparison
 
-A fair cross-mode comparison requires that each XCD processes the same amount of data. Since a TPX device bundles 2 XCDs and an SPX device bundles 6, we scale the array size proportionally:
+A naive approach would use the same array size for every device regardless of partition mode. But BabelStream runs independently on each device, so the total memory footprint per APU would scale with device count -- CPX (6 devices per APU) would push 6x more aggregate data through each APU's HBM than SPX (1 device). That's not a fair bandwidth comparison; it's a contention test.
+
+Instead, we scale the array size proportionally to XCDs per device. This way, each XCD processes the same amount of data, and each APU faces the same total memory pressure (~38 GB) regardless of mode:
 
 - **CPX:** `--arraysize 268435456` (2^28 elements = 2,148 MB per array)
 - **TPX:** `--arraysize 536870912` (2 x 2^28 = 4,295 MB per array)
 - **SPX:** `--arraysize 1610612736` (6 x 2^28 = 12,885 MB per array)
 
-This ensures each XCD, regardless of partition mode, gets 2^28 elements of work.
+Now every APU services ~38.4 GB total, regardless of partition mode. The buffer size sweep (discussed below) confirms that all these array sizes sit well above the ~100 MB saturation threshold, so we're measuring steady-state HBM throughput, not cache effects.
 
 ### Calibrating run duration
 
@@ -138,6 +142,17 @@ done
 
 The idea is simple: run a probe, measure wall-clock time, linearly extrapolate to the target, and repeat until convergence. This landed us at `numtimes=1500` for the standard 2 GB array (CPX/TPX) and proportionally lower values for larger arrays (e.g., `numtimes=600` for 4 GB in TPX, `numtimes=250` for ~13 GB in SPX).
 
+### A note on statistical reliability
+
+One might wonder whether single benchmark runs produce reliable numbers. BabelStream handles this internally: with `numtimes=1500`, each kernel executes 1,500 times, and the reported bandwidth is derived from the **minimum** time across all iterations (excluding the first as warmup). This is the standard [STREAM methodology](https://www.cs.virginia.edu/stream/) -- the minimum captures the best achievable throughput, filtering out OS jitter, scheduling noise, and transient interference. With 1,499 independent timing samples spread across ~60 seconds of execution, thermal variation and system state fluctuations are captured within each run. The relevant source from [`main.cpp`](https://github.com/UoB-HPC/BabelStream/blob/main/src/main.cpp):
+
+```cpp
+// Get min/max; ignore the first result
+auto minmax = std::minmax_element(timings[i].begin()+1, timings[i].end());
+// Bandwidth from minimum time
+fmt_bw(bench[i].weight, *minmax.first);
+```
+
 ---
 
 ## Results: The Buffer Size Sweep
@@ -171,7 +186,7 @@ The bottom-right panel shows the **whole-node** view -- the sum of all XCDs -- c
 
 Now for the main comparison. Here we ran all devices simultaneously on the full node, with **normalized array sizes** (each XCD processes 2^28 elements):
 
-![Full-Node Comparison: CPX vs TPX vs SPX](../figures/overall.png)
+![Full-Node Comparison: CPX vs TPX vs SPX](../figures/overall_normalized_package_size.png)
 
 ### The headline numbers
 
@@ -197,26 +212,32 @@ This makes intuitive sense. A Dot reduction on an SPX device must aggregate part
 
 ## Why Does CPX Win?
 
-The fundamental answer is **coordination overhead**.
+Our working hypothesis is **coordination overhead** within multi-XCD devices.
 
-In CPX mode, all 24 XCDs run as independent devices. Each XCD has its own command queue, its own scheduler, and generates its own memory requests into its slice of the HBM subsystem. There is no synchronization between devices. Each stream of memory requests saturates its own path through the memory controller without interference from other XCDs.
+In CPX mode, all 24 XCDs run as independent devices. Each XCD has its own command queue, its own scheduler, and generates its own memory requests into its slice of the HBM subsystem. There is no synchronization between devices.
 
-In TPX and SPX modes, the HIP runtime must coordinate multiple XCDs within a single device:
+In TPX and SPX modes, the HIP runtime must coordinate multiple XCDs within a single device. Several mechanisms could contribute to the observed bandwidth loss:
 
-1. **Work distribution:** The runtime must partition kernel launches across XCDs within the device
-2. **Address space unification:** All XCDs in a device share a single virtual address space, requiring coordination in the memory management layer
-3. **Implicit synchronization:** Kernel completion and memory ordering guarantees across XCDs within a device add overhead
+1. **Work distribution:** The runtime partitions kernel launches across XCDs within the device
+2. **Address space unification:** All XCDs in a device share a single virtual address space, which may add coordination in the memory management layer
+3. **Implicit synchronization:** Kernel completion and memory ordering guarantees across XCDs within a device may add overhead
 4. **Reduction across dies:** Operations like Dot require cross-XCD communication within the device
 
-None of this overhead exists in CPX mode, where each XCD is blissfully unaware of the others.
+None of this applies in CPX mode, where each XCD operates independently.
+
+We should note that we have not performed low-level profiling (e.g., `rocprof` trace analysis) to confirm which of these mechanisms dominate, or whether other factors -- such as memory controller arbitration differences, TLB pressure from larger unified address spaces, or firmware-level HBM scheduling -- also play a role. What the data clearly shows is that grouping more XCDs into a single device reduces per-XCD bandwidth; the emulated TPX experiment below narrows down *where* that cost lives.
 
 ### Confirmation: emulated TPX vs real TPX
 
-One of our earlier experiments nailed this down. We ran BabelStream on two *adjacent* CPX devices on the same APU -- effectively "emulating" a TPX configuration with 2 XCDs of compute power, but without any inter-XCD device coordination. Then we compared that against real TPX mode (a single 2-XCD device).
+This raised a natural question: if we take CPX mode and run two XCDs on the same APU simultaneously, does that match what TPX gives us? In other words, is a TPX device just two CPX devices stapled together, or does the TPX device abstraction itself cost something?
+
+We tested exactly this. In CPX mode, we launched BabelStream on two adjacent devices belonging to the same APU (e.g., devices 0 and 1 on APU 0) and summed their bandwidth. Then we compared that against real TPX mode running on the corresponding single 2-XCD device.
 
 ![Real TPX vs Emulated TPX](../figures/005_real_Tpx_vs_TpxEmulatedInCpx.png)
 
-The result: real TPX was **1-3% slower** than the emulated version for streaming kernels, and the gap widened for Dot (the reduction kernel). The hardware is identical in both cases -- same XCDs, same HBM, same APU. The only difference is whether the runtime treats them as one device or two. That runtime coordination is where the bandwidth goes.
+The result: real TPX was **~0.3% slower** on streaming kernels (Copy, Mul, Add, Triad) and **~2.5-3% slower on Dot** (the reduction kernel). The hardware is identical in both cases -- same XCDs, same HBM, same APU. The only difference is whether the runtime treats them as one device or two. The streaming gap is tiny, but the Dot gap is telling: each independent CPX process runs its own reduction locally, while the fused TPX device must coordinate a reduction across two XCDs internally. That cross-die coordination is where the bandwidth goes.
+
+A side finding from this experiment is equally important: running 2 XCDs per APU in CPX mode produced **zero measurable contention** -- cross-device bandwidth spread was below 0.05% on streaming operations. The HBM controller handles two concurrent streams without breaking a sweat. Degradation only begins at 3 XCDs per APU, making 2 XCDs per APU a critical contention-onset threshold for the MI300A's memory subsystem.
 
 ---
 
@@ -230,9 +251,9 @@ Before comparing modes, we characterized CPX in isolation. The question: does ba
 
 ![CPX Per-APU Cumulative Bandwidth](../figures/000_cpx_full.png)
 
-Mostly yes. The cumulative Triad bandwidth per APU climbs nearly linearly from 1 to 5 XCDs, with a slight flattening at 6. All four APUs reach around **4.2 TB/s aggregate Triad** (79% of the 5.3 TB/s per-APU peak). The near-linearity confirms that the HBM subsystem is not becoming the bottleneck at 6 XCDs -- there's still headroom in the memory controller.
+Mostly yes. The cumulative Triad bandwidth per APU climbs nearly linearly from 1 to 5 XCDs, with a slight flattening at 6. All four APUs reach around **4.19-4.20 TB/s aggregate Triad** (79% of the 5.3 TB/s per-APU peak). The near-linearity confirms that the HBM subsystem is not becoming the bottleneck at 6 XCDs -- there's still headroom in the memory controller.
 
-The Dot kernel tells a slightly different story: scaling is also near-linear, but the absolute efficiency per XCD is lower, and variance across XCDs is wider. Some XCDs consistently underperform on Dot while matching others on streaming kernels, suggesting non-uniform internal topology effects.
+The Dot kernel tells a slightly different story: scaling is also near-linear, but the absolute efficiency per XCD is lower, and variance across XCDs is wider. Specific XCDs -- notably devices 2 and 4 within each APU -- consistently underperform under contention, dropping to around 95% efficiency on streaming operations and as low as 80% on Dot, while their neighbors maintain near-baseline bandwidth. This asymmetry is hardware-level and reproducible regardless of run ordering, pointing to a physical asymmetry in the HBM interconnect topology rather than a software scheduling artifact. The strong devices compensate, keeping the aggregate high.
 
 ### Array size sensitivity
 
@@ -240,7 +261,7 @@ Does doubling the array size change anything? We tested this on a single APU in 
 
 ![Array Size: 2^28 vs 2^29](../figures/003_cpx_1APU_arraysizex2.png)
 
-The result: minimal difference for streaming kernels (within 1%), but Dot showed a **5-15% drop** with larger arrays on some devices. This is expected -- larger arrays mean more data to reduce, amplifying the cost of the final accumulation step. For streaming kernels (Copy, Mul, Add, Triad), once you're above the saturation threshold (~100 MB), array size matters very little.
+The aggregate Triad barely budged -- from 4.20 to 4.16 TB/s (about 1%). But the per-device picture shifted: the already-weak devices 2 and 4 degraded further (from 95% to 89% on Copy), and previously strong devices like 1 and 5 also started suffering. Devices 0 and 3 remained rock-solid at ~100% efficiency in both configurations. The Dot product gap widened more considerably, confirming that larger memory footprints increase HBM controller contention pressure. The takeaway: for streaming kernels, once you're above the saturation threshold (~100 MB), aggregate bandwidth is remarkably stable -- but the *distribution* across devices shifts as contention pressure grows.
 
 ### SPX: uniform but lower
 
@@ -248,7 +269,7 @@ SPX mode provides the simplest device model -- just 4 big devices. The payoff is
 
 ![SPX Full Node](../figures/007_spx_full_node.png)
 
-Each SPX device reaches about **3.65 TB/s for Triad** (69% of per-APU peak), impressively uniform across all four APUs. But the efficiency vs. ideal (6x isolated XCD) drops to 85% for streaming kernels and plummets to around 60% for Dot. The 6-XCD coordination tax is real and consistent.
+Each SPX device reaches about **3.64-3.65 TB/s for Triad** (69% of per-APU peak), with all four APUs landing within 0.4% of each other -- the most uniform results of any mode. The inter-device contention variance that plagues CPX and TPX is eliminated because there's only one process per APU. But the efficiency vs. ideal (6x isolated XCD baseline) drops to 85% for streaming kernels and plummets to approximately 51% on Dot. With a single process coordinating all 6 XCDs internally, the intra-device overhead dominates. The Dot reduction across 6 XCDs within one device is far more expensive than 6 independent reductions in CPX mode.
 
 ### TPX: the middle ground
 
@@ -256,21 +277,111 @@ TPX mode shows intermediate behavior. With 3 devices per APU (each pairing 2 XCD
 
 ![TPX Full Node](../figures/006_tpx_full_node.png)
 
-Per-device Triad ranges from 1.32 to 1.43 TB/s across the 12 devices, with more variance than either CPX or SPX. The cumulative per-APU bandwidth reaches about **4.1-4.2 TB/s**, which is close to CPX's level -- the 2-XCD coordination overhead is modest. This makes TPX an appealing middle ground for workloads that benefit from slightly larger device memory but can't tolerate SPX's bandwidth loss.
+Per-device Triad ranges from 1.32 to 1.43 TB/s across the 12 devices, with more variance than either CPX or SPX. The contention pattern mirrors CPX: the **3rd TPX device per APU** faces the most bandwidth pressure. Devices that happen to be the 3rd in their APU (e.g., device 5 on APU 1, devices 8 and 9 on APU 2) drop to 80-93% efficiency on streaming operations and as low as 77% on Dot, while the 1st and 2nd devices per APU maintain near-peak performance.
+
+Despite this variance, the cumulative per-APU bandwidth reaches **4.10-4.19 TB/s** (77-79% of the 5.3 TB/s per-APU peak), close to CPX's level. The 2-XCD-per-device coordination overhead is modest. This makes TPX an appealing middle ground for workloads that benefit from slightly larger device memory but can't tolerate SPX's bandwidth loss.
+
+### What if we don't normalize array sizes?
+
+It's worth addressing this directly, since at first glance it might seem simpler to just use the same array size for all modes and compare. We ran that experiment too -- and the result initially suggested TPX was the winner. Understanding why that conclusion is misleading requires looking at what BabelStream actually does under the hood.
+
+#### How BabelStream works: one process, one device
+
+BabelStream is a single-process, single-device benchmark. Each instance allocates three arrays on the GPU via `hipMalloc`, then runs streaming kernels over them in a tight loop. Here's the Triad kernel from the HIP backend ([`HIPStream.cpp`](https://github.com/UoB-HPC/BabelStream/blob/main/src/hip/HIPStream.cpp)):
+
+```cpp
+__global__ void triad_kernel(T * a, const T * b, const T * c, size_t array_size) {
+  const T scalar = startScalar;
+  for (size_t i = threadIdx.x + blockDim.x * blockIdx.x;
+       i < array_size;
+       i += gridDim.x * blockDim.x) {
+    a[i] = b[i] + scalar * c[i];
+  }
+}
+```
+
+Each kernel launch is followed by `hipDeviceSynchronize()`, and the wall-clock time is measured to compute bandwidth:
+
+```cpp
+// bandwidth = bytes_moved / minimum_time_across_iterations
+auto fmt_bw = [&](size_t weight, double dt) {
+  return unit.fmt((weight * sizeof(T) * array_size) / dt);
+};
+```
+
+The key point: BabelStream measures **"how fast can I stream through my arrays on this one device?"** It knows nothing about other processes. It doesn't coordinate with them, share memory with them, or account for them.
+
+#### What happens when we launch 6 processes per APU
+
+In CPX mode, our test script launches 24 independent BabelStream processes -- one per XCD, six per APU. Each process allocates its own 3 arrays (totaling ~6.4 GB), and streams through them independently. The six processes on the same APU all compete for the same HBM bandwidth pool.
+
+```bash
+# Each of 24 iterations spawns an independent process
+for i in $(seq 0 23); do
+  HIP_VISIBLE_DEVICES=$i ./hip-stream --arraysize 268435456 --numtimes 1500 &
+done
+wait
+```
+
+When we sum the reported bandwidths to get "whole-node Triad," we're computing:
+
+```
+total_bw = sum( bytes_moved_by_process_i / time_for_process_i )  for i in 0..23
+```
+
+Now compare this with SPX mode, which launches only 4 processes (one per APU). Each SPX process gets all 6 XCDs on its APU, but still allocates the same 6.4 GB of arrays. The per-APU memory traffic looks radically different:
+
+| Mode | BabelStream processes per APU | Arrays allocated per APU | HBM traffic per Triad sweep |
+|------|:-:|:-:|:-:|
+| CPX | 6 independent processes | 6 x 6.4 GB = **38.4 GB** | 6 x 6.4 GB = **38.4 GB** |
+| TPX | 3 independent processes | 3 x 6.4 GB = **19.2 GB** | 3 x 6.4 GB = **19.2 GB** |
+| SPX | 1 process | 1 x 6.4 GB = **6.4 GB** | 1 x 6.4 GB = **6.4 GB** |
+
+CPX is pushing **6x** the total data through each APU's HBM controllers. We're no longer comparing "which partition mode delivers more bandwidth" -- we're comparing "how well does the HBM subsystem hold up under 6x the load." That's a congestion test, not a bandwidth test.
+
+#### The un-normalized results
+
+With the same 2^28-element array per device, the whole-node Triad numbers were:
+
+| Mode | Devices | Total HBM traffic per APU | Triad (TB/s) | % of peak |
+|------|:-:|:-:|:-:|:-:|
+| CPX | 24 | **38.4 GB** | 16.4 | 77% |
+| TPX | 12 | **19.2 GB** | 16.7 | 79% |
+| SPX | 4  | **6.4 GB**  | 14.6 | 69% |
+
+TPX edges out CPX by a slim margin. But CPX is achieving this while servicing 2x the total memory traffic of TPX and 6x that of SPX per APU. The fact that CPX still delivers 77% of peak under this asymmetric load is, if anything, evidence of how efficiently independent XCDs saturate the HBM controllers.
+
+When we normalize array sizes (as described in the experimental setup), every APU services ~38.4 GB regardless of partition mode, and CPX's advantage becomes clear.
+
+### How does 78% of peak compare to other GPUs?
+
+NVIDIA's H100 routinely achieves 88-92% of its theoretical HBM bandwidth on STREAM Triad. Our best result on MI300A (CPX, 78%) falls noticeably short. Is this purely a ROCm software maturity gap?
+
+Not entirely. The hardware architectures are fundamentally different. The H100 is a **monolithic die** -- a single GPU chip with a unified memory controller. Every CU (or SM, in NVIDIA terminology) connects to the same on-die memory subsystem with uniform latency. There is no inter-die coordination for memory access; it's one chip, one address space, one scheduler.
+
+The MI300A is a **chiplet architecture**. Each APU assembles 6 separate XCD dies, each with its own compute resources, connected to shared HBM through an interposer. Even in CPX mode (where each XCD runs independently), the memory subsystem must arbitrate across 6 dies sharing the same HBM stacks. This arbitration, the physical distance between chiplets and memory, and the multi-die interconnect overhead all impose costs that a monolithic design avoids.
+
+Software maturity is certainly a factor too -- the ROCm stack is younger than CUDA, and multi-XCD scheduling has fewer years of optimization behind it. But it would be misleading to attribute the entire gap to software. The chiplet design that gives MI300A its flexibility (partition modes, CPU-GPU integration, scalable manufacturing) comes with an inherent bandwidth-efficiency trade-off compared to a monolithic part.
 
 ---
 
 ## Key Takeaways
 
-**1. CPX mode maximizes memory bandwidth.** At 78% of theoretical peak (16.5 TB/s whole-node Triad), CPX outperforms TPX by 11% and SPX by 19%. If your workload is bandwidth-bound and can manage 24 independent device instances, CPX is the clear choice.
+**1. CPX mode maximizes memory bandwidth.** At 78% of theoretical peak (16.5 TB/s whole-node Triad), CPX outperforms TPX by 11% and SPX by 19%. The trade-off is operational complexity: 24 devices per node means 24 MPI ranks, finer domain decompositions, and more halo exchanges. For bandwidth-bound codes where the decomposition is manageable, CPX delivers meaningfully more throughput.
 
-**2. The overhead is from software coordination, not hardware.** The per-XCD silicon delivers similar bandwidth in all modes. The difference comes from the runtime overhead of coordinating multiple XCDs within a single device -- work distribution, synchronization, and unified address space management.
+**2. Multi-XCD device coordination is the likely culprit.** The emulated TPX experiment shows that two independent CPX devices outperform a single fused TPX device on identical hardware, pointing to overhead in coordinating XCDs within a device. Pinpointing the exact mechanism -- runtime scheduling, memory management, firmware-level arbitration, or a combination -- would require low-level profiling (e.g., `rocprof`) that we have not yet performed.
 
 **3. Reduction operations suffer most.** The Dot kernel, which requires cross-XCD communication for the reduction step, shows the largest mode sensitivity. SPX Dot reaches only 47% of peak, versus 64% for CPX. Workloads heavy in reductions or all-reduce patterns will see the biggest benefit from CPX.
 
 **4. SPX trades bandwidth for simplicity.** SPX's 4-device model is the easiest to program and reason about. For workloads that aren't bandwidth-bound (compute-heavy kernels, for instance), SPX's simplicity may outweigh the bandwidth penalty. But for memory-bound codes, the 15 percentage-point gap vs. CPX is substantial.
 
-**5. Array size normalization matters.** When comparing modes, scaling the array size proportionally to XCDs per device (so each XCD processes the same data) gives the fairest comparison. With a fixed (un-normalized) array size, TPX can actually *match* CPX because fewer elements per XCD create a different operating point. The "right" comparison depends on whether your workload's problem size scales with device count.
+**5. Array size normalization matters.** With a fixed per-device array size, CPX faces 6x the total memory pressure of SPX per APU, skewing the comparison. Normalizing per XCD equalizes APU-level load and gives the fair picture. See the deep dive section for the un-normalized results and a full discussion of why the naive comparison is misleading.
+
+---
+
+### Limitations
+
+All results in this post come from a **single MI300A node** on the HLRS Hunter cluster. Node-to-node variation -- due to silicon lottery on HBM stacks, firmware differences, or thermal conditions -- could shift absolute numbers by several percent. We cannot claim this node is representative of all MI300A systems. The relative ordering of CPX > TPX > SPX is likely robust (it follows from structural differences in how XCDs are grouped), but the exact percentage gaps should be treated as indicative, not definitive. Reproducing these experiments across multiple nodes would strengthen the conclusions.
 
 ---
 
