@@ -75,7 +75,7 @@ cmake --build build
 
 ### Parallel launch across all devices
 
-Each experiment launches BabelStream on every visible device in parallel, using `HIP_VISIBLE_DEVICES` to pin each instance to a specific device. Here's the CPX full-node script (`000_test_cpx_full_node.sh`), which runs 24 instances simultaneously:
+Each experiment launches BabelStream on every visible device in parallel, using `HIP_VISIBLE_DEVICES` to pin each instance to a specific device. Here's the CPX full-node script (`000_cpx_full_node.sh`), which runs 24 instances simultaneously:
 
 ```bash
 #!/bin/bash
