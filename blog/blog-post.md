@@ -10,13 +10,11 @@ This post walks through why.
 
 ## Inside the MI300A: Chiplets, XCDs, and HBM3
 
-The MI300A is AMD's APU (Accelerated Processing Unit) for HPC, fusing CPU and GPU silicon on the same package. Each MI300A node on Hunter contains **four APUs**. Each APU houses:
+The MI300A is AMD's APU (Accelerated Processing Unit) for HPC, fusing CPU and GPU silicon on the same package. It houses:
 
 - **6 XCDs** (Accelerated Compute Dies), the CDNA 3 GPU chiplets that execute kernels
 - **3 CCDs** (CPU Complex Dies) with 24 Zen 4 cores sharing the same package
 - **8 HBM3 memory stacks**, providing a theoretical peak of **5.3 TB/s** of memory bandwidth per APU
-
-With four APUs per node, the total theoretical bandwidth is **21.2 TB/s** per node.
 
 ### A quick note on MI300X vs MI300A
 
@@ -38,18 +36,96 @@ The MI300A lets you choose how to group XCDs into GPU devices. This is a BIOS-le
 
 | Mode | Devices per APU | XCDs per device | Total devices (node) | Character |
 |------|:-:|:-:|:-:|-----------|
-| **CPX** | 6 | 1 | 24 | Maximum parallelism: each XCD is its own device |
-| **TPX** | 3 | 2 | 12 | Middle ground: pairs of XCDs form each device |
 | **SPX** | 1 | 6 | 4  | Maximum device size: one device per APU |
+| **TPX** | 3 | 2 | 12 | Middle ground: pairs of XCDs form each device |
+| **CPX** | 6 | 1 | 24 | Maximum parallelism: each XCD is its own device |
 
-In **CPX mode**, the system exposes 24 independent GPU devices. Each has its own memory space, its own scheduler, and its own slice of HBM bandwidth. From the programmer's perspective, it's like having 24 small GPUs.
+**SPX (Single Partition X-celerator) mode** is the default setting. Each device commands all 6 XCDs on its APU, with a unified address space and a single command queue. It's the simplest mental model: one device per APU. A single APU is shown as a single device. Since there are 4 APU's on our Hunter nodes, `rocm-smi` will report 4 APU's:
 
-In **SPX mode**, you see only 4 large devices. Each device commands all 6 XCDs on its APU, with a unified address space and a single command queue. It's the simplest mental model: one device per APU.
+```bash
+$ rocm-smi
 
-**TPX mode** splits the difference: 2 XCDs per device, 12 devices total.
+
+============================================ ROCm System Management Interface ============================================
+====================================================== Concise Info ======================================================
+Device  Node  IDs              Temp        Power     Partitions          SCLK   MCLK     Fan  Perf  PwrCap  VRAM%  GPU%  
+              (DID,     GUID)  (Junction)  (Socket)  (Mem, Compute, ID)                                                  
+==========================================================================================================================
+0       4     0x74a0,   47157  31.0°C      121.0W    NPS1, SPX, 0        93Mhz  1200Mhz  0%   auto  550.0W  0%     0%    
+1       5     0x74a0,   11624  32.0°C      64.0W     NPS1, SPX, 0        94Mhz  900Mhz   0%   auto  550.0W  0%     0%    
+2       6     0x74a0,   53900  31.0°C      70.0W     NPS1, SPX, 0        94Mhz  900Mhz   0%   auto  550.0W  0%     0%    
+3       7     0x74a0,   18385  32.0°C      69.0W     NPS1, SPX, 0        94Mhz  900Mhz   0%   auto  550.0W  0%     0%    
+==========================================================================================================================
+================================================== End of ROCm SMI Log ===================================================
+```
+
+**TPX (Triple Partition X-celerator) mode** divides the GPU complex into three partitions, each containing two XCDs. With 4 APU's per node, we will see 12 devices total:
+
+```bash
+$ rocm-smi
+
+
+============================================ ROCm System Management Interface ============================================
+====================================================== Concise Info ======================================================
+Device  Node  IDs              Temp        Power     Partitions          SCLK   MCLK     Fan  Perf  PwrCap  VRAM%  GPU%  
+              (DID,     GUID)  (Junction)  (Socket)  (Mem, Compute, ID)                                                  
+==========================================================================================================================
+0       4     0x74a0,   6167   45.0°C      139.0W    NPS1, TPX, 0        94Mhz  1300Mhz  0%   auto  550.0W  0%     0%    
+1       5     0x74a0,   40982  45.0°C      139.0W    NPS1, TPX, 1        94Mhz  1300Mhz  0%   auto  550.0W  0%     0%    
+2       6     0x74a0,   10262  45.0°C      139.0W    NPS1, TPX, 2        94Mhz  1300Mhz  0%   auto  550.0W  0%     0%    
+3       7     0x74a0,   36170  46.0°C      139.0W    NPS1, TPX, 0        94Mhz  1300Mhz  0%   auto  550.0W  0%     0%    
+4       8     0x74a0,   13643  46.0°C      139.0W    NPS1, TPX, 1        94Mhz  1300Mhz  0%   auto  550.0W  0%     0%    
+5       9     0x74a0,   48459  46.0°C      140.0W    NPS1, TPX, 2        94Mhz  1300Mhz  0%   auto  550.0W  0%     0%    
+6       10    0x74a0,   29358  45.0°C      105.0W    NPS1, TPX, 0        94Mhz  1100Mhz  0%   auto  550.0W  0%     0%    
+7       11    0x74a0,   51887  45.0°C      104.0W    NPS1, TPX, 1        94Mhz  1100Mhz  0%   auto  550.0W  0%     0%    
+8       12    0x74a0,   17071  45.0°C      104.0W    NPS1, TPX, 2        94Mhz  1100Mhz  0%   auto  550.0W  0%     0%    
+9       13    0x74a0,   59379  47.0°C      99.0W     NPS1, TPX, 0        95Mhz  1100Mhz  0%   auto  550.0W  0%     0%    
+10      14    0x74a0,   24562  47.0°C      100.0W    NPS1, TPX, 1        95Mhz  1100Mhz  0%   auto  550.0W  0%     0%    
+11      15    0x74a0,   55282  47.0°C      101.0W    NPS1, TPX, 2        95Mhz  1100Mhz  0%   auto  550.0W  0%     0%    
+==========================================================================================================================
+================================================== End of ROCm SMI Log ===================================================
+```
+
+In **CPX (Core Partitioned X-celerator) mode**, the system exposes all XCD's as independent GPU devices:
+
+```bash
+$ rocm-smi
+
+
+============================================ ROCm System Management Interface ============================================
+====================================================== Concise Info ======================================================
+Device  Node  IDs              Temp        Power     Partitions          SCLK   MCLK     Fan  Perf  PwrCap  VRAM%  GPU%  
+              (DID,     GUID)  (Junction)  (Socket)  (Mem, Compute, ID)                                                  
+==========================================================================================================================
+0       4     0x74a0,   44068  46.0°C      126.0W    NPS1, CPX, 0        95Mhz  1300Mhz  0%   auto  550.0W  0%     0%    
+1       5     0x74a0,   20517  46.0°C      126.0W    NPS1, CPX, 1        95Mhz  1300Mhz  0%   auto  550.0W  0%     0%    
+2       6     0x74a0,   5157   46.0°C      126.0W    NPS1, CPX, 2        95Mhz  1300Mhz  0%   auto  550.0W  0%     0%    
+3       7     0x74a0,   59428  46.0°C      126.0W    NPS1, CPX, 3        95Mhz  1300Mhz  0%   auto  550.0W  0%     0%    
+4       8     0x74a0,   39973  46.0°C      126.0W    NPS1, CPX, 4        95Mhz  1300Mhz  0%   auto  550.0W  0%     0%    
+5       9     0x74a0,   24612  46.0°C      126.0W    NPS1, CPX, 5        95Mhz  1300Mhz  0%   auto  550.0W  0%     0%    
+6       10    0x74a0,   14713  46.0°C      81.0W     NPS1, CPX, 0        94Mhz  900Mhz   0%   auto  550.0W  0%     0%    
+7       11    0x74a0,   50552  46.0°C      81.0W     NPS1, CPX, 1        94Mhz  900Mhz   0%   auto  550.0W  0%     0%    
+8       12    0x74a0,   33144  46.0°C      81.0W     NPS1, CPX, 2        94Mhz  900Mhz   0%   auto  550.0W  0%     0%    
+9       13    0x74a0,   32121  46.0°C      81.0W     NPS1, CPX, 3        94Mhz  900Mhz   0%   auto  550.0W  0%     0%    
+10      14    0x74a0,   2424   46.0°C      81.0W     NPS1, CPX, 4        94Mhz  900Mhz   0%   auto  550.0W  0%     0%    
+11      15    0x74a0,   62841  46.0°C      81.0W     NPS1, CPX, 5        94Mhz  900Mhz   0%   auto  550.0W  0%     0%    
+12      16    0x74a0,   50845  45.0°C      71.0W     NPS1, CPX, 0        94Mhz  900Mhz   0%   auto  550.0W  0%     0%    
+13      17    0x74a0,   15004  45.0°C      71.0W     NPS1, CPX, 1        94Mhz  900Mhz   0%   auto  550.0W  0%     0%    
+14      18    0x74a0,   32412  45.0°C      70.0W     NPS1, CPX, 2        94Mhz  900Mhz   0%   auto  550.0W  0%     0%    
+15      19    0x74a0,   33437  45.0°C      70.0W     NPS1, CPX, 3        94Mhz  900Mhz   0%   auto  550.0W  0%     0%    
+16      20    0x74a0,   63132  45.0°C      70.0W     NPS1, CPX, 4        94Mhz  900Mhz   0%   auto  550.0W  0%     0%    
+17      21    0x74a0,   2717   45.0°C      70.0W     NPS1, CPX, 5        94Mhz  900Mhz   0%   auto  550.0W  0%     0%    
+18      22    0x74a0,   21440  45.0°C      128.0W    NPS1, CPX, 0        94Mhz  1300Mhz  0%   auto  550.0W  0%     0%    
+19      23    0x74a0,   44993  45.0°C      128.0W    NPS1, CPX, 1        94Mhz  1300Mhz  0%   auto  550.0W  0%     0%    
+20      24    0x74a0,   60353  45.0°C      128.0W    NPS1, CPX, 2        94Mhz  1300Mhz  0%   auto  550.0W  0%     0%    
+21      25    0x74a0,   6080   45.0°C      128.0W    NPS1, CPX, 3        94Mhz  1300Mhz  0%   auto  550.0W  0%     0%    
+22      26    0x74a0,   25537  45.0°C      128.0W    NPS1, CPX, 4        94Mhz  1300Mhz  0%   auto  550.0W  0%     0%    
+23      27    0x74a0,   40896  45.0°C      128.0W    NPS1, CPX, 5        94Mhz  1300Mhz  0%   auto  550.0W  0%     0%    
+==========================================================================================================================
+================================================== End of ROCm SMI Log ===================================================
+```
 
 The question is: does grouping more XCDs into a single device help or hurt memory bandwidth?
-
 ---
 
 ## BabelStream: Measuring What Matters
@@ -68,7 +144,7 @@ Triad is the traditional STREAM benchmark kernel and is the standard measure of 
 
 An important caveat: BabelStream measures **achievable HBM bandwidth** using pure streaming access patterns. It doesn't capture compute-bound behavior, non-trivial memory access patterns, inter-device communication (MPI/RCCL), or kernel launch overhead. The results presented here show how much bandwidth the hardware can deliver under ideal streaming conditions in each partition mode. This provides a useful ceiling for memory-bound codes, but not a direct prediction of application performance.
 
-BabelStream v5.0 was built with the HIP backend:
+For the AMD Hardware stack, BabelStream v5.0 was built with the HIP backend:
 
 ```bash
 git clone https://github.com/UoB-HPC/BabelStream
@@ -105,7 +181,7 @@ For TPX (12 devices) and SPX (4 devices), the loop bounds change accordingly. Th
 
 A naive approach would use the same array size for every device regardless of partition mode. But BabelStream runs independently on each device, so the total memory footprint per APU would scale with device count. CPX (6 devices per APU) would push 6x more aggregate data through each APU's HBM than SPX (1 device). That's not a fair bandwidth comparison; it's a contention test.
 
-Instead, the array size scales proportionally to XCDs per device. This way, each XCD processes the same amount of data, and each APU faces the same total memory pressure (~38 GB) regardless of mode:
+To keep it fair, the array size is set to scale proportionally to XCDs per device. This way, each XCD processes the same amount of data, and each APU faces the same total memory pressure (~38 GB) regardless of mode:
 
 - **CPX:** `--arraysize 268435456` (2^28 elements = 2,148 MB per array)
 - **TPX:** `--arraysize 536870912` (2 x 2^28 = 4,295 MB per array)
@@ -161,6 +237,8 @@ auto minmax = std::minmax_element(timings[i].begin()+1, timings[i].end());
 fmt_bw(bench[i].weight, *minmax.first);
 ```
 
+Crucially, all devices on the node run simultaneously for the entire ~60-second window, so every device's "best" iteration occurs under full-node contention — there is no quiet period where a single device could enjoy uncontested HBM access. The per-device peaks are therefore peaks *under realistic load*, and using the minimum time per device gives each partition mode its best possible shot, making the comparison conservative.
+
 ---
 
 ## Results: The Buffer Size Sweep
@@ -212,7 +290,7 @@ Now for the main comparison. All devices run simultaneously on the full node, wi
 | **TPX** | 12 x 2 XCD | 4,295 | 14.8 | 70% | 11.8 | 55% |
 | **SPX** | 4 x 6 XCD | 12,885 | 13.3 | 63% | 10.0 | 47% |
 
-CPX delivers **16.5 TB/s** of Triad bandwidth, reaching 78% of the 21.2 TB/s theoretical peak. TPX trails by 11%, and SPX trails by 19%.
+CPX delivers **16.5 TB/s** of whole-node Triad bandwidth, reaching 78% of the 21.2 TB/s theoretical peak (4 APUs x 5.3 TB/s). TPX achieves 14.8 TB/s (70%), and SPX 13.3 TB/s (63%), a 10% and 19% reduction in absolute bandwidth compared to CPX, respectively.
 
 ### Across all five kernels
 
@@ -222,13 +300,13 @@ The pattern holds for Copy, Mul, Add, and Triad: CPX leads, TPX is in the middle
 
 ### Per-APU consistency
 
-Another advantage of CPX: all four APUs deliver nearly identical bandwidth (~4.1 TB/s each). TPX and SPX show similar uniformity across APUs, but at lower absolute values (~3.7 and ~3.3 TB/s respectively).
+Another advantage of CPX: all four APUs deliver the most consistent per-APU bandwidth, with less variation than TPX or SPX.
 
 ![Per-APU Triad Consistency](plotting/figures/h2h_03_per_apu_triad.png)
 
 ### The Dot penalty
 
-Dot is the outlier. It's the only kernel involving a **reduction**, which requires inter-thread and (in multi-XCD configurations) inter-XCD communication. The gap between Triad and Dot efficiency is 14 percentage points for CPX and TPX, but grows to 15 for SPX, where Dot drops to just **47% of peak**.
+Dot is the outlier. It's the only kernel involving a **reduction**, which requires inter-thread and (in multi-XCD configurations) inter-XCD communication. The gap between Triad and Dot efficiency is ~14 percentage points for both CPX and TPX, and grows to ~15 for SPX, where Dot drops to just **47% of peak**.
 
 ![The Dot Reduction Penalty](plotting/figures/h2h_04_dot_penalty.png)
 
@@ -236,7 +314,7 @@ This makes intuitive sense. A Dot reduction on an SPX device must aggregate part
 
 ### Device-level spread
 
-The boxplots below show how much per-device bandwidth varies within each mode. CPX's 24 devices show the widest spread (some XCDs are physically disadvantaged; more on this in the deep dive section), while SPX's 4 devices cluster tightly. Note the scales differ because device sizes differ; the aggregate story is told by the figures above.
+The boxplots below show how much per-device bandwidth varies within each mode. TPX shows the widest spread, likely because the 3rd device on each APU faces more bandwidth pressure than the other two (more on this in the deep dive section). CPX and SPX cluster more tightly. Note the scales differ because device sizes differ; the aggregate story is told by the figures above.
 
 ![Device-Level Spread: Triad & Dot](plotting/figures/h2h_05_device_spread.png)
 
@@ -246,18 +324,17 @@ The boxplots below show how much per-device bandwidth varies within each mode. C
 
 The working hypothesis is **coordination overhead** within multi-XCD devices.
 
-In CPX mode, all 24 XCDs run as independent devices. Each XCD has its own command queue, its own scheduler, and generates its own memory requests into its slice of the HBM subsystem. There is no synchronization between devices.
+In CPX mode, all 24 XCDs run as independent devices. Each XCD has its own command queue, its own scheduler, and generates its own memory requests into the HBM subsystem. There is no synchronization between devices.
 
 In TPX and SPX modes, the HIP runtime must coordinate multiple XCDs within a single device. Several mechanisms could contribute to the observed bandwidth loss:
 
 1. **Work distribution:** The runtime partitions kernel launches across XCDs within the device
-2. **Address space unification:** All XCDs in a device share a single virtual address space, which may add coordination in the memory management layer
-3. **Implicit synchronization:** Kernel completion and memory ordering guarantees across XCDs within a device may add overhead
-4. **Reduction across dies:** Operations like Dot require cross-XCD communication within the device
+2. **Implicit synchronization:** Kernel completion and memory ordering guarantees across XCDs within a device may add overhead
+3. **Reduction across dies:** Operations like Dot require cross-XCD communication within the device
 
 None of this applies in CPX mode, where each XCD operates independently.
 
-It should be noted that no low-level profiling (e.g., `rocprof` trace analysis) has been performed to confirm which of these mechanisms dominate, or whether other factors (such as memory controller arbitration differences, TLB pressure from larger unified address spaces, or firmware-level HBM scheduling) also play a role. What the data clearly shows is that grouping more XCDs into a single device reduces per-XCD bandwidth; the emulated TPX experiment below narrows down *where* that cost lives.
+It should be noted that no low-level profiling (e.g., `rocprof` trace analysis) has been performed to confirm which of these mechanisms dominate, or whether other factors (such as memory controller arbitration differences or firmware-level HBM scheduling) also play a role. What the data clearly shows is that grouping more XCDs into a single device reduces per-XCD bandwidth; the emulated TPX experiment below narrows down *where* that cost lives.
 
 ### Confirmation: emulated TPX vs real TPX
 
@@ -277,15 +354,17 @@ A side finding from this experiment is equally important: running 2 XCDs per APU
 
 The results above tell the main story. But several additional experiments along the way shed light on specific aspects of MI300A behavior. Here's a quick tour.
 
-### CPX scaling linearity
+**A note on these experiments:** Unless stated otherwise, the deep dive experiments below use the standard per-device array size (2^28 elements, ~2 GB per array) without the cross-mode normalization applied in the head-to-head comparison. They also explore controlled configurations (e.g., single-APU runs, incremental XCD activation) where contention conditions intentionally differ from the full-node setup. This means the absolute bandwidth numbers here should not be compared directly against the headline results; each experiment is designed to isolate a specific effect.
 
-Before comparing modes, CPX was characterized in isolation. The question: does bandwidth scale linearly as more XCDs are activated on a single APU?
+### CPX per-XCD contribution
+
+With all 6 XCDs per APU running simultaneously in CPX mode, the plot below shows how each XCD contributes to the aggregate per-APU bandwidth. The cumulative sum is plotted by adding one device at a time (sorted by device index), but this is a visualization of a single full-node experiment, not a series of separate runs.
 
 ![CPX Per-APU Cumulative Bandwidth](plotting/figures/000_cpx_full.png)
 
-Mostly yes. The cumulative Triad bandwidth per APU climbs nearly linearly from 1 to 5 XCDs, with a slight flattening at 6. All four APUs reach around **4.19-4.20 TB/s aggregate Triad** (79% of the 5.3 TB/s per-APU peak). The near-linearity confirms that the HBM subsystem is not becoming the bottleneck at 6 XCDs; there's still headroom in the memory controller.
+The cumulative Triad bandwidth per APU climbs nearly linearly across the 6 XCDs, with a slight flattening at the last one. All four APUs reach around **4.19-4.20 TB/s aggregate Triad** (79% of the 5.3 TB/s per-APU peak). The near-linearity confirms that individual XCDs contribute roughly equal bandwidth, with no sign of contention limiting the aggregate.
 
-The Dot kernel tells a slightly different story: scaling is also near-linear, but the absolute efficiency per XCD is lower, and variance across XCDs is wider. Specific XCDs (notably devices 2 and 4 within each APU) consistently underperform under contention, dropping to around 95% efficiency on streaming operations and as low as 80% on Dot, while their neighbors maintain near-baseline bandwidth. This asymmetry is hardware-level and reproducible regardless of run ordering, pointing to a physical asymmetry in the HBM interconnect topology rather than a software scheduling artifact. The strong devices compensate, keeping the aggregate high.
+The Dot kernel tells a slightly different story: the per-XCD contributions are less uniform. Specific XCDs (notably devices 2 and 4 within each APU) consistently deliver lower bandwidth, dropping to around 95% efficiency on streaming operations and as low as 80% on Dot, while their neighbors maintain near-baseline performance. This asymmetry is reproducible regardless of run ordering, pointing to a physical asymmetry in the HBM interconnect topology rather than a software scheduling artifact. The strong devices compensate, keeping the aggregate high.
 
 ### Array size sensitivity
 
@@ -293,7 +372,7 @@ Does doubling the array size change anything? This was tested on a single APU in
 
 ![Array Size: 2^28 vs 2^29](plotting/figures/003_cpx_1APU_arraysizex2.png)
 
-The aggregate Triad barely budged, going from 4.20 to 4.16 TB/s (about 1%). But the per-device picture shifted: the already-weak devices 2 and 4 degraded further (from 95% to 89% on Copy), and previously strong devices like 1 and 5 also started suffering. Devices 0 and 3 remained rock-solid at ~100% efficiency in both configurations. The Dot product gap widened more considerably, confirming that larger memory footprints increase HBM controller contention pressure. The takeaway: for streaming kernels, once above the saturation threshold (~100 MB), aggregate bandwidth is remarkably stable, but the *distribution* across devices shifts as contention pressure grows.
+The aggregate Triad barely budged, going from 4.20 to 4.16 TB/s (about 1%). But the per-device picture shifted: the already-weak devices 2 and 4 degraded further (from 95% to 89% on Copy), and previously strong devices like 1 and 5 also started suffering. Devices 0 and 3 remained rock-solid at top efficiency in both configurations. The Dot product gap widened more considerably, confirming that larger memory footprints increase HBM controller contention pressure. The takeaway: for streaming kernels, once above the saturation threshold (~100 MB), aggregate bandwidth is remarkably stable, but the *distribution* across devices shifts as contention pressure grows.
 
 ### SPX: uniform but lower
 
@@ -387,11 +466,11 @@ When array sizes are normalized (as described in the experimental setup), every 
 
 ### How does 78% of peak compare to other GPUs?
 
-NVIDIA's H100 routinely achieves 88-92% of its theoretical HBM bandwidth on STREAM Triad. The best result on MI300A (CPX, 78%) falls noticeably short. Is this purely a ROCm software maturity gap?
+NVIDIA's H100 typically achieves 80-95% of its theoretical HBM bandwidth on STREAM Triad. The best result on MI300A (CPX, 78%) falls noticeably short. Is this purely a ROCm software maturity gap?
 
-Not entirely. The hardware architectures are fundamentally different. The H100 is a **monolithic die**, a single GPU chip with a unified memory controller. Every CU (or SM, in NVIDIA terminology) connects to the same on-die memory subsystem with uniform latency. There is no inter-die coordination for memory access; it's one chip, one address space, one scheduler.
+Not entirely. The core architectural difference is **monolithic vs. chiplet**. The H100 is a single 814 mm^2 die: one chip, one address space, one scheduler. It is not without internal non-uniformity (its 12 memory controllers and partitioned L2 crossbar create measurable latency differences across the die), but all SMs live on the same piece of silicon with no inter-die communication.
 
-The MI300A is a **chiplet architecture**. Each APU assembles 6 separate XCD dies, each with its own compute resources, connected to shared HBM through an interposer. Even in CPX mode (where each XCD runs independently), the memory subsystem must arbitrate across 6 dies sharing the same HBM stacks. This arbitration, the physical distance between chiplets and memory, and the multi-die interconnect overhead all impose costs that a monolithic design avoids.
+The MI300A is a **chiplet architecture**. Each APU assembles 6 separate XCD dies, each with its own compute resources, connected to shared HBM through an interposer. Even in CPX mode (where each XCD runs independently), the memory subsystem must arbitrate across 6 dies sharing the same HBM stacks. This arbitration, the physical distance between chiplets and memory, and the multi-die interconnect overhead all impose costs that a monolithic design largely avoids.
 
 Software maturity is certainly a factor too. The ROCm stack is younger than CUDA, and multi-XCD scheduling has fewer years of optimization behind it. But it would be misleading to attribute the entire gap to software. The chiplet design that gives MI300A its flexibility (partition modes, CPU-GPU integration, scalable manufacturing) comes with an inherent bandwidth-efficiency trade-off compared to a monolithic part.
 
@@ -417,16 +496,18 @@ All results in this post come from a **single MI300A node** on the HLRS Hunter c
 
 ---
 
-*All experiments were performed on the HLRS Hunter supercomputer (AMD MI300A nodes). BabelStream v5.0 with the HIP backend, double precision. This study, including experiment design, data analysis, and writing, was conducted with Claude Opus 4.6 (Anthropic) as the AI assistant. All experiments were run on real hardware; the AI assisted in interpreting results and drafting this post. The full set of experiment scripts and plotting code is available in [the repository](https://github.com/kkaytekin/mi300a_babelstream_cpx_tpx_spx).*
+*All experiments were performed on the HLRS Hunter supercomputer (AMD MI300A nodes). BabelStream v5.0 with the HIP backend, double precision. This study, including experiment design, data analysis, and writing, was conducted with the assistance of Claude Opus 4.6 (Anthropic). All experiments were run on real hardware; the AI assisted in interpreting results and drafting this post. The full set of experiment scripts and plotting code is available in [the repository](https://github.com/kkaytekin/mi300a_babelstream_cpx_tpx_spx).*
 
 
 ---
 
 ### Cite this work
 
-<div style="background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 6px; padding: 16px 20px; margin-top: 12px; font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; font-size: 0.85em; line-height: 1.6; color: #1f2937; white-space: pre-wrap;">@misc{mi300a_babelstream_2026,
+```bibtex
+@misc{mi300a_babelstream_2026,
   title   = {How Partition Modes Shape Memory Bandwidth on {AMD} {MI300A}: A {BabelStream} Study},
   author  = {Aytekin, Kaan},
   year    = {2026},
   url     = {https://github.com/kkaytekin/mi300a_babelstream_cpx_tpx_spx}
-}</div>
+}
+```
