@@ -1,3 +1,3 @@
 [submodule "babelstream-src"]
-	path = babelstream-src
+	path = experiments/babelstream-src
 	url = https://github.com/UoB-HPC/BabelStream.git
