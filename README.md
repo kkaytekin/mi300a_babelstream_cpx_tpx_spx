@@ -496,7 +496,11 @@ All results in this post come from a **single MI300A node** on the HLRS Hunter c
 
 ---
 
-*All experiments were performed on the HLRS Hunter supercomputer (AMD MI300A nodes). BabelStream v5.0 with the HIP backend, double precision. This study, including experiment design, data analysis, and writing, was conducted with the assistance of Claude Opus 4.6 (Anthropic). All experiments were run on real hardware; the AI assisted in interpreting results and drafting this post. The full set of experiment scripts and plotting code is available in [the repository](https://github.com/kkaytekin/mi300a_babelstream_cpx_tpx_spx).*
+### Acknowledgements
+
+First and foremest, I would like to thank **Dr. Jose Gracia** for the very engaging technical exchange spanning this and other projects, as well as for his tips for the experimental setup of this particular study. I also would like to thank **Dr. Marius Kurz** from AMD for pointing out that the evaluation would be more fair if the array size is normalized. Lastly, I would like to thank my supervisors **Dr. Kerem Kayabay** and **Dr. Dennis Hoppe** for providing me the intellectual freedom and letting me experiment with this new feature. Shortly after our experiments, the CPX and TPX partitioning features became available for all the system users on Hunter. To learn how to enable these features, consider checking out [the respective documentation](https://kb.hlrs.de/platforms/index.php/Hunter_MI300A_Partitioning_Modes_(SPX_/_TPX_/_CPX)) in the HLRS Knowledge Base. 
+
+*All experiments were performed on the HLRS Hunter supercomputer (AMD MI300A nodes). BabelStream v5.0 with the HIP backend, double precision. This study, including experiment design, data analysis, and writing, was conducted with the assistance of Claude Opus 4.6 (Anthropic). All experiments were run on real hardware; the AI assisted in interpreting results and drafting this post. The full set of experiment scripts and plotting code is available in [the experiments folder of the repository](https://github.com/kkaytekin/mi300a_babelstream_cpx_tpx_spx/tree/main/experiments).*
 
 
 ---
